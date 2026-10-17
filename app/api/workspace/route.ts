@@ -1,21 +1,18 @@
-import { env } from 'cloudflare:workers';
+import { readWorkspace as read, saveWorkspace } from '../../../lib/workspace-store';
+import { canDevelop } from '../../developer-access';
 import { z } from 'zod';
 import { getChatGPTUser } from '../../chatgpt-auth';
 import { datasetSchema, emptyWorkspace, principleSchema, reviewSchema, settingsSchema, type Workspace } from '../../../lib/model';
 export const dynamic = 'force-dynamic';
 const headers = { 'Cache-Control': 'no-store' };
 function reply(body: unknown, status = 200) { return Response.json(body, { status, headers }); }
-async function read(userId: string) {
-  if (!env.DB) throw new Error('storage');
-  const row = await env.DB.prepare('SELECT payload, revision FROM review_workspaces WHERE user_id = ?').bind(userId).first<{ payload: string; revision: number }>();
-  return { workspace: row ? JSON.parse(row.payload) as Workspace : emptyWorkspace(), revision: row?.revision ?? 0 };
-}
 export async function GET() {
   const user = await getChatGPTUser(); if (!user) return reply({ error: 'Войдите в свой аккаунт для доступа.' }, 401);
-  try { return reply(await read(user.userId)); } catch { return reply({ error: 'Не удалось загрузить данные. Попробуйте обновить страницу.' }, 503); }
+  try { const current = await read(user.userId); if (!canDevelop(user)) delete current.workspace.developer; return reply(current); } catch { return reply({ error: 'Не удалось загрузить данные. Попробуйте обновить страницу.' }, 503); }
 }
 export async function POST(request: Request) {
   const user = await getChatGPTUser(); if (!user) return reply({ error: 'Нужен вход в аккаунт.' }, 401);
+  if (!canDevelop(user)) return reply({ error: 'Изменения доступны только разработчику.' }, 403);
   const origin = request.headers.get('origin');
   if (origin && origin !== new URL(request.url).origin) return reply({ error: 'Недопустимый источник запроса.' }, 403);
   try {
@@ -40,9 +37,7 @@ export async function POST(request: Request) {
       if (state.principles.length > 200) return reply({ error: 'Не более 200 предложений в рабочем пространстве.' }, 400);
     } else if (body.action === 'delete_principle') { const pid = z.string().max(160).parse(body.payload); state.principles = state.principles.filter(p => p.id !== pid); }
     else state.settings = settingsSchema.parse(body.payload);
-    const saved = await env.DB!.prepare('INSERT INTO review_workspaces (user_id, payload, revision, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload, revision = review_workspaces.revision + 1, updated_at = excluded.updated_at WHERE review_workspaces.revision = ? RETURNING revision').bind(user.userId, JSON.stringify(state), now, body.revision).first<{ revision: number }>();
-    if (!saved) return reply({ error: 'Конфликт сохранения. Обновите страницу.' }, 409);
-    return reply({ workspace: state, revision: saved.revision });
+    return reply(await saveWorkspace(user.userId, state, body.revision));
   } catch (error) {
     if (error instanceof z.ZodError) return reply({ error: error.issues[0]?.message ?? 'Неверный формат.', path: error.issues[0]?.path.join('.') }, 400);
     if (error instanceof SyntaxError) return reply({ error: 'Файл должен содержать корректный JSON.' }, 400);

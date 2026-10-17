@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, FileJson, Flag, History, Lightbulb, LockKeyhole, MessageCircle, MessageSquareText, Plus, Search, Settings2, ShieldCheck, Sparkles, Upload, X } from 'lucide-react';
 import { contextStats, datasetSchema, emptyWorkspace, nextAdminResponse, type Dataset, type Principle, type Review, type Settings, type Verdict, type Workspace } from '../lib/model';
 import demoRaw from '../lib/demo.json';
+import { effectiveAnalysis } from '../lib/developer';
 
 const demo = datasetSchema.parse(demoRaw);
 type WorkspaceResponse = { workspace: Workspace; revision: number; error?: string };
@@ -12,7 +13,7 @@ const time = (at: string) => new Intl.DateTimeFormat('ru-RU', { hour: '2-digit',
 const date = (at: string) => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: 'Europe/Moscow' }).format(new Date(at));
 const saveFile = (name: string, value: unknown) => { const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1500); };
 
-export default function ReviewApp({ displayName }: { displayName: string }) {
+export default function ReviewApp({ displayName, canDevelop = false }: { displayName: string; canDevelop?: boolean }) {
   const [workspace, setWorkspace] = useState<Workspace>(emptyWorkspace);
   const [revision, setRevision] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -37,7 +38,7 @@ export default function ReviewApp({ displayName }: { displayName: string }) {
   const importRef = useRef<HTMLInputElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const mutationLock = useRef(false);
-  const pack = workspace.dataset ?? demo;
+  const pack = useMemo(() => { const source = workspace.dataset ?? demo; return { ...source, dialogues: source.dialogues.map(d => ({ ...d, analyses: d.messages.filter(m => m.role === 'client').flatMap(m => { const value = effectiveAnalysis(workspace, d, m.id); return value ? [value] : []; }) })) }; }, [workspace]);
   const isDemo = !workspace.dataset || pack.source.is_demo;
   const topics = Array.from(new Set(pack.dialogues.map(d => d.topic)));
   const datasetId = workspace.dataset_id;
@@ -52,7 +53,7 @@ export default function ReviewApp({ displayName }: { displayName: string }) {
   const d = pack.dialogues.find(x => x.id === selected) ?? pack.dialogues[0];
   const clientMessages = d.messages.filter(m => m.role === 'client');
   const anchor = clientMessages.find(m => m.id === anchorId) ?? d.messages.find(m => m.id === d.analyses[0]?.client_message_id) ?? clientMessages[clientMessages.length - 1];
-  const a = d.analyses.find(x => x.client_message_id === anchor?.id);
+  const a = effectiveAnalysis(workspace, d, anchor?.id ?? '');
   const anchorIndex = d.messages.findIndex(m => m.id === anchor?.id);
   const replies = nextAdminResponse(d, anchor?.id ?? '');
   const stats = contextStats(d, a);
@@ -114,12 +115,12 @@ export default function ReviewApp({ displayName }: { displayName: string }) {
       source: pack.source, constraints: { client_send_mode: 'draft_only', owner_approval_required: true, preferred_model: 'gpt-6-luna', model_connection_verified: false },
       preferences: workspace.settings, proposals: workspace.principles,
       reviews: currentReviews, review_scope: 'Оценки относятся к указанному набору и выбранному моменту, не ко всему диалогу автоматически.',
-      application_status: 'not_applied_to_bot',
+      application_status: 'not_applied_to_bot', developer_changes: workspace.developer,
     });
   }
 
   return <div className="app-shell">
-    <header className="topbar"><a className="brand" href="/" aria-label="Ева — главная"><span className="brand-symbol"><span/><span/><span/><span/></span><span>ева<span className="brand-dot">.</span></span></a><span className="brand-separator"/><span className="workspace-label">Пиксель / Кодология <ChevronDown size={13}/></span><div className="topbar-right"><span className="private-label"><LockKeyhole size={13}/> Личный кабинет</span><span className="avatar owner" title={displayName}>В</span></div></header>
+    <header className="topbar"><a className="brand" href="/" aria-label="Ева — главная"><span className="brand-symbol"><span/><span/><span/><span/></span><span>ева<span className="brand-dot">.</span></span></a><span className="brand-separator"/><span className="workspace-label">Пиксель / Кодология <ChevronDown size={13}/></span><div className="topbar-right">{canDevelop && <a className="button small outline" href="/developer"><Settings2 size={14}/> Редактор</a>}<span className="private-label"><LockKeyhole size={13}/> Личный кабинет</span><span className="avatar owner" title={displayName}>В</span></div></header>
     <main>
       <div className="page-heading"><div><div className="eyebrow">КАЧЕСТВО ОБЩЕНИЯ</div><h1>Диалог в контексте<span className="heading-dot">.</span></h1><p>Видеть всю историю. Понимать суть. Улучшать общие правила.</p></div><button className="button primary" onClick={() => importRef.current?.click()} disabled={busy || loading}><Upload size={16}/> Загрузить диалоги</button></div>
       <input ref={importRef} type="file" accept=".json,application/json" hidden onChange={e => { void loadFile(e.target.files?.[0]); e.target.value = ''; }}/>
@@ -150,11 +151,11 @@ export default function ReviewApp({ displayName }: { displayName: string }) {
           })}</div><div className="history-footer"><MessageCircle size={14}/> Нажмите на сообщение клиента, чтобы выбрать момент ответа.</div>
         </section>
         <aside className="analysis-panel"><div className="analysis-heading"><div className="eva-mark"><Sparkles size={17}/></div><div><h2>Как ответила бы Ева</h2><p>{isDemo ? 'Учебный вариант · не отправляется' : 'Разбор из загруженного пакета'}</p></div></div>
-          <div className="analysis-scroll">{!anchor ? <div className="empty-analysis">В этом диалоге нет сообщения клиента для сравнения.</div> : !a ? <div className="empty-analysis"><CircleHelp size={28}/><h3>Для этого момента нет разбора</h3><p>История доступна, но вариант Евы ещё не загружен. Выберите другое сообщение или добавьте результат анализа из проекта.</p><div className="moment-buttons">{d.analyses.map(an => <button key={an.client_message_id} onClick={() => setAnchorId(an.client_message_id)}>Разбор в {time(d.messages.find(m => m.id === an.client_message_id)!.at)} <ArrowRight size={13}/></button>)}</div></div> : <>
+          <div className="analysis-scroll">{!anchor ? <div className="empty-analysis">В этом диалоге нет сообщения клиента для сравнения.</div> : !a ? <div className="empty-analysis"><CircleHelp size={28}/><h3>Для этого момента нет разбора</h3><p>История доступна, но вариант Евы ещё не загружен. Выберите другое сообщение или добавьте результат анализа из проекта.</p>{canDevelop && <a className="button small outline" href={`/developer?dialogue=${encodeURIComponent(d.id)}&message=${encodeURIComponent(anchor.id)}`}>Создать вариант ответа</a>}<div className="moment-buttons">{d.analyses.map(an => <button key={an.client_message_id} onClick={() => setAnchorId(an.client_message_id)}>Разбор в {time(d.messages.find(m => m.id === an.client_message_id)!.at)} <ArrowRight size={13}/></button>)}</div></div> : <>
             <div className="intent-card"><span className="section-kicker">СУТЬ ОБРАЩЕНИЯ</span><p>{a.intent}</p></div>
             <div className="context-meter"><span className="context-meter-icon"><History size={15}/></span><div><strong>{stats.used === null ? 'Контекст модели не указан' : `${stats.used} из ${stats.preceding} сообщений до ответа`}</strong><span>{stats.used === null ? 'В выгрузке нет списка прочитанных сообщений' : 'Состав контекста указан в выгрузке'}</span></div>{a.used_message_ids && <button onClick={() => setHighlightContext(!highlightContext)} className={highlightContext ? 'active' : ''}>{highlightContext ? 'Скрыть' : 'Показать'}</button>}</div>
             <div className="response-block actual"><div className="response-heading"><span className="admin-mark">А</span><strong>Что ответил администратор</strong><span>ФАКТ</span></div>{replies.length ? replies.map(m => <p key={m.id}>{m.text || 'Ответ без текста'}</p>) : <p className="muted">Ответ сотрудника после этого сообщения отсутствует в выгрузке.</p>}</div>
-            <div className="response-block suggested"><div className="response-heading"><Sparkles size={14}/><strong>Вариант Евы</strong><span>ЧЕРНОВИК</span></div><p>{a.draft || 'Черновик не подготовлен. Смотрите причины ниже.'}</p><div className="draft-footer"><ShieldCheck size={12}/><span>{a.model || 'Модель не указана'} · отправки клиенту нет</span></div></div>
+            <div className="response-block suggested"><div className="response-heading"><Sparkles size={14}/><strong>Вариант Евы</strong><span>ЧЕРНОВИК</span></div><p>{a.draft || 'Черновик не подготовлен. Смотрите причины ниже.'}</p>{canDevelop && anchor && <a className="text-link" href={`/developer?dialogue=${encodeURIComponent(d.id)}&message=${encodeURIComponent(anchor.id)}`}>Редактировать ответ и промт <Settings2 size={13}/></a>}<div className="draft-footer"><ShieldCheck size={12}/><span>{a.model || 'Модель не указана'} · отправки клиенту нет</span></div></div>
             <details className="analysis-details" open><summary><span>На что опирается ответ</span><ChevronDown size={14}/></summary><div className="detail-body">{a.known_facts.length > 0 && <div className="fact-list">{a.known_facts.map((fact, ix) => <div key={ix}><Check size={13}/><span>{fact}</span></div>)}</div>}{a.missing_facts.length > 0 && <div className="missing-facts"><span className="mini-label">ЕЩЁ НЕ ПОДТВЕРЖДЕНО</span>{a.missing_facts.map((fact, ix) => <p key={ix}>{fact}</p>)}</div>}{a.required_actions.length > 0 && <div className="required-actions"><span className="mini-label">НУЖНОЕ ДЕЙСТВИЕ</span>{a.required_actions.map((action, ix) => <p key={ix}>{action}</p>)}</div>}{a.rule_refs.map((rule, ix) => <div className="rule-reference" key={ix}><BookOpen size={13}/><div><strong>{rule.title}</strong><span>{rule.source}</span><em>{rule.status === 'verified' ? 'Помечено проверенным источником' : rule.status === 'proposed' ? 'Предложение, не утверждённое правило' : 'Статус источника неизвестен'}</em></div></div>)}{a.explanation && <p className="explanation">{a.explanation}</p>}</div></details>
             <div className="feedback-section"><div className="feedback-heading"><h3>Суть понята верно?</h3>{review && <span><Check size={12}/> Сохранено</span>}</div><p>Можно просто выбрать оценку — переписывать ответ не нужно.</p><div className="verdict-grid">{(Object.keys(labels) as Verdict[]).map(v => <button key={v} disabled={busy} className={`${review?.verdict === v ? 'chosen' : ''} ${v === 'good' ? 'good-verdict' : ''}`} onClick={() => void mark(v)}>{v === 'good' ? <Check size={13}/> : v === 'lost_context' ? <History size={13}/> : v === 'human_needed' ? <MessageCircle size={13}/> : <Flag size={13}/>} {labels[v]}</button>)}</div><textarea aria-label="Необязательный комментарий к оценке" value={note} onChange={e => setNote(e.target.value)} placeholder="Комментарий — только если хочется пояснить" maxLength={3000}/>{note !== (review?.note ?? '') && <button className="button small outline" disabled={busy} onClick={() => void mark(draftVerdict)}>Сохранить комментарий</button>}<button className="generalize-button" onClick={() => { setNewRule({ title: '', text: '', topic: d.topic }); setModal(true); }}><Lightbulb size={15}/> Задать правило для похожих случаев <ArrowRight size={14}/></button></div>
           </>}</div></aside>

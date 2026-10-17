@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { DeveloperState } from './developer';
 const short = z.string().trim().min(1).max(300);
 const id = z.string().trim().min(1).max(160);
 export const messageSchema = z.object({
@@ -57,7 +58,7 @@ export const principleSchema = z.object({ id, title: short, text: z.string().tri
 export type Principle = z.infer<typeof principleSchema> & { updated_at: string };
 export const settingsSchema = z.object({ tone: z.enum(['warm', 'formal', 'casual', 'unset']), clarification: z.enum(['targeted', 'handoff', 'unset']), length: z.enum(['short', 'balanced', 'detailed', 'unset']), illness: z.enum(['acknowledge', 'admin_action', 'unset']), notifications: z.enum(['digest', 'important', 'all', 'unset']) });
 export type Settings = z.infer<typeof settingsSchema>;
-export type Workspace = { dataset: Dataset | null; dataset_id: string; reviews: Review[]; principles: Principle[]; settings: Settings };
+export type Workspace = { dataset: Dataset | null; dataset_id: string; reviews: Review[]; principles: Principle[]; settings: Settings; developer?: DeveloperState };
 export function emptyWorkspace(): Workspace { return { dataset: null, dataset_id: 'demo', reviews: [], principles: [], settings: { tone: 'unset', clarification: 'unset', length: 'unset', illness: 'unset', notifications: 'unset' } }; }
 export function reviewKey(datasetId: string, dialogueId: string, messageId: string) { return JSON.stringify([datasetId, dialogueId, messageId]); }
 export function nextAdminResponse(d: Dialogue, anchorId: string): Message[] {
