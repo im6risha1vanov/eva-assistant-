@@ -126,15 +126,23 @@ def analyse(c,job,cfg,provider):
         payload=engine.payload(current,history,human)
         if len(core.canonical(payload))>180000:raise core.AgentError('CONTEXT_TOO_LARGE')
         with c:c.execute("UPDATE reports SET status='model_started' WHERE event_key=?",(job['event_key'],))
-        result,call=provider.request([{'role':'system','content':core.SYSTEM},{'role':'user','content':core.canonical(payload)}],purpose='live_report',max_tokens=2500)
+        messages=[{'role':'system','content':core.SYSTEM},{'role':'user','content':core.canonical(payload)}]
+        # Retry only when the gateway refused or was unreachable, so no answer was produced; timeouts stay single-shot.
+        for attempt in range(3):
+            try:result,call=provider.request(messages,purpose='live_report',max_tokens=2500);break
+            except core.AgentError as e:
+                if str(e) not in core.RETRYABLE or attempt==2:raise
+                time.sleep(20*(attempt+1))
         core.atomic(PRIVATE/'results'/str(job['event_key']+'.json'),{'result':result,'call_id':call,'history_count':len(history),'policy_version':reg['version']})
         refs={x['ref'] for x in payload['conversation']}
+        result,notes=core.repair(result,reg,refs)
         try:checked=core.validate(result,reg,refs,human)
         except core.AgentError as e:
-            courtesy={'благодарность','завершение диалога','thanks','gratitude','closing','acknowledgement','подтверждение получения'}
-            if str(e)!='MODEL_SCENARIO_REQUIRED' or not result.get('intents') or not all(str(x).lower() in courtesy for x in result['intents']):raise
+            # A missing scenario is reported to the administrator instead of discarding the draft.
+            if str(e)!='MODEL_SCENARIO_REQUIRED':raise
             temp=dict(result,decision='knowledge_gap');checked=core.validate(temp,reg,refs,human);checked['decision']=result['decision']
         summary=checked['summary']
+        if notes:summary+='\nПроверка: '+'; '.join(notes)+'.'
         if human:summary+='\nДиалог передан человеку; управление остаётся у сотрудника.'
         if not history:summary+='\nПредыдущая история в доступном источнике отсутствует.'
         if current.get('attachment_unknown'):summary+='\nСодержимое вложения не распознано.'
