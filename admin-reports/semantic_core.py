@@ -106,6 +106,29 @@ def validate(result,regulation,evidence_refs,human_active=False):
     if re.search(r'https?://|[\w.+-]+@[\w.-]+\.[a-z]{2,}|\+?\d[\d ()-]{9,}\d',result['draft'],re.I):raise AgentError('MODEL_CONTACT_LEAK')
     if human_active:result=dict(result,decision='human_handoff',required_actions=sorted(set(result['required_actions']+['human_review'])),handoff_state='HUMAN_ACTIVE')
     return result
+RETRYABLE={'LLM_HTTP_429','LLM_HTTP_500','LLM_HTTP_502','LLM_HTTP_503','LLM_HTTP_504','LLM_URLError'}
+def repair(result,regulation,evidence_refs):
+    """Drop bookkeeping the model got wrong; safety checks in validate() stay strict."""
+    if not isinstance(result,dict) or set(result)!=FIELDS:return result,[]
+    notes=[];result=dict(result);rules={r['rule_id']:r for r in regulation['rules']}
+    result['policy_version']=regulation['version']
+    rule_ids=[i for i in result['rule_ids'] if isinstance(i,str) and i in rules] if isinstance(result['rule_ids'],list) else []
+    if isinstance(result['rule_ids'],list) and len(rule_ids)<len(result['rule_ids']):notes.append('ссылки на несуществующие правила убраны')
+    result['rule_ids']=rule_ids;sources={rules[r]['source_id'] for r in rule_ids};result['source_ids']=sorted(sources)
+    if isinstance(result['entities'],list):
+        result['entities']=[e for e in result['entities'] if isinstance(e,dict) and set(e)=={'name','value','origin','evidence_ref'} and e['origin']=='client_reported' and e['evidence_ref'] in evidence_refs]
+    if isinstance(result['required_actions'],list):result['required_actions']=[a for a in result['required_actions'] if a in ACTIONS]
+    if isinstance(result['claims'],list):
+        claims=[]
+        for claim in result['claims']:
+            if isinstance(claim,dict) and set(claim)=={'text','kind','refs'} and claim['kind'] in {'rule','client_reported'} and isinstance(claim['refs'],list):
+                allowed=sources if claim['kind']=='rule' else evidence_refs
+                claim=dict(claim,refs=[r for r in claim['refs'] if r in allowed])
+                if not claim['refs']:notes.append('утверждения без подтверждённого источника убраны');continue
+            claims.append(claim)
+        result['claims']=claims
+    if result['decision'] not in {'technical_incident','knowledge_gap'} and not any(i.startswith('scenario.') for i in rule_ids):notes.append('подходящий сценарий в книге продаж не найден, проверьте черновик внимательнее')
+    return result,sorted(set(notes))
 class Usage:
     def __init__(self,path,limit=20):
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True);self.limit=limit
