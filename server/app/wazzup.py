@@ -10,9 +10,11 @@ class WazzupError(RuntimeError):
 class WazzupClient:
     """Small adapter for the official Wazzup v3 API."""
 
-    def __init__(self, token: str, base_url: str = "https://api.wazzup24.com") -> None:
+    def __init__(self, token: str, base_url: str = "https://api.wazzup24.com",
+                 client: httpx.Client | None = None) -> None:
         self.token = token
         self.base_url = base_url.rstrip("/")
+        self.client = client or httpx.Client()
 
     def _headers(self) -> dict[str, str]:
         if not self.token:
@@ -23,7 +25,7 @@ class WazzupClient:
         }
 
     def channels(self) -> list[dict]:
-        response = httpx.get(
+        response = self.client.get(
             f"{self.base_url}/v3/channels", headers=self._headers(), timeout=15
         )
         response.raise_for_status()
@@ -51,7 +53,7 @@ class WazzupClient:
             body["refMessageId"] = reply_to
         if crm_message_id:
             body["crmMessageId"] = crm_message_id
-        response = httpx.post(
+        response = self.client.post(
             f"{self.base_url}/v3/message",
             headers=self._headers(),
             json=body,

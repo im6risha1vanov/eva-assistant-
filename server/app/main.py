@@ -37,6 +37,8 @@ settings = Settings()
 BASE_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = BASE_DIR / settings.database_path
 KNOWLEDGE_PATH = BASE_DIR / settings.knowledge_path
+# One pooled client: a new httpx client per webhook builds a fresh TLS context each time.
+http_client = httpx.Client(timeout=15)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -45,6 +47,7 @@ async def lifespan(_: FastAPI):
         raise RuntimeError("Knowledge release is not approved for automatic replies")
     init_db()
     yield
+    http_client.close()
 
 
 app = FastAPI(title="Sales chat assistant", version="0.1.0", lifespan=lifespan)
@@ -168,7 +171,7 @@ def require_secret(x_webhook_secret: str = Header(default="")) -> None:
 
 
 def wazzup_client() -> WazzupClient:
-    return WazzupClient(settings.wazzup_api_token, settings.wazzup_api_base)
+    return WazzupClient(settings.wazzup_api_token, settings.wazzup_api_base, http_client)
 
 
 def normalize(text: str) -> set[str]:
@@ -264,8 +267,8 @@ def wazzup_webhook(token: str, payload: dict, request: Request) -> Response | di
         if authorization:
             forward_headers["Authorization"] = authorization
         try:
-            crm_response = httpx.post(settings.wazzup_crm_forward_url, json=payload,
-                                      headers=forward_headers, timeout=15)
+            crm_response = http_client.post(settings.wazzup_crm_forward_url, json=payload,
+                                            headers=forward_headers, timeout=15)
         except httpx.HTTPError:
             raise HTTPException(status_code=502, detail="CRM forwarding unavailable")
         if not crm_response.is_success:
