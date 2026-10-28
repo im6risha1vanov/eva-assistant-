@@ -13,4 +13,16 @@ class Polish(unittest.TestCase):
         self.assertEqual(draft,'Хорошо. Если будут вопросы, обращайтесь');self.assertIn('обращайтесь',notes[0])
     def test_clean_draft_untouched(self):
         self.assertEqual(core.polish('Подскажите, в каком классе ребёнок?'),('Подскажите, в каком классе ребёнок?',[]))
+
+class Names(unittest.TestCase):
+    def test_labels_are_stable_and_restored(self):
+        names={}
+        a=core.redact('Это Анна, Миша заболел',names);b=core.redact('Миша придёт в четверг',names)
+        self.assertNotIn('Миша',a+b);self.assertEqual(a.count('[имя'),2);self.assertIn(names['Миша'],b)
+        draft,notes=core.restore(names['Анна']+', выздоравливайте, ждём '+names['Миша']+' в четверг',names)
+        self.assertEqual(draft,'Анна, выздоравливайте, ждём Миша в четверг');self.assertEqual(notes,[])
+    def test_unknown_label_flagged(self):
+        self.assertEqual(core.restore('Ждём [имя7]',{})[1],['имя не подставлено'])
+    def test_legacy_redact_unchanged(self):
+        self.assertEqual(core.redact('Привет, Анна'),'Привет, [лицо]')
 if __name__=='__main__':unittest.main()
