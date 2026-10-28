@@ -10,6 +10,8 @@ Group=eva
 WorkingDirectory=/opt/eva
 EnvironmentFile=/etc/eva/eva.env
 Environment=PYTHONDONTWRITEBYTECODE=1
+# Fewer glibc malloc arenas keep threadpool RSS from fragmenting on a 1 GB host.
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=/opt/eva/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
 Restart=on-failure
 RestartSec=5
