@@ -25,4 +25,10 @@ class Names(unittest.TestCase):
         self.assertEqual(core.restore('Ждём [имя7]',{})[1],['имя не подставлено'])
     def test_legacy_redact_unchanged(self):
         self.assertEqual(core.redact('Привет, Анна'),'Привет, [лицо]')
+class Ordinary(unittest.TestCase):
+    def test_sentence_start_words_are_not_names(self):
+        names={};text=core.redact('При оплате пришлите ссылку. Ждём ответа. Маша заболела',names)
+        self.assertIn('При оплате',text);self.assertIn('Ждём',text);self.assertEqual(list(names),['Маша'])
+    def test_word_seen_lowercase_is_not_a_name(self):
+        names={};self.assertEqual(core.redact('Сквозняк в классе',names,frozenset({'сквозняк'})),'Сквозняк в классе');self.assertEqual(names,{})
 if __name__=='__main__':unittest.main()
