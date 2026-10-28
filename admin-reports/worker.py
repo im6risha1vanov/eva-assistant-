@@ -141,12 +141,13 @@ def analyse(c,job,cfg,provider):
             # A missing scenario is reported to the administrator instead of discarding the draft.
             if str(e)!='MODEL_SCENARIO_REQUIRED':raise
             temp=dict(result,decision='knowledge_gap');checked=core.validate(temp,reg,refs,human);checked['decision']=result['decision']
+        draft,style=core.polish(checked['draft']);notes=notes+style
         summary=checked['summary']
         if notes:summary+='\nПроверка: '+'; '.join(notes)+'.'
         if human:summary+='\nДиалог передан человеку; управление остаётся у сотрудника.'
         if not history:summary+='\nПредыдущая история в доступном источнике отсутствует.'
         if current.get('attachment_unknown'):summary+='\nСодержимое вложения не распознано.'
-        publish(c,job,data,summary,checked['draft'],None,cfg)
+        publish(c,job,data,summary,draft,None,cfg)
     except Exception as e:
         code=str(e) if isinstance(e,core.AgentError) else type(e).__name__
         if code=='SOURCE_DELETED':
