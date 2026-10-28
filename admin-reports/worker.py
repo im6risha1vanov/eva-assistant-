@@ -141,7 +141,7 @@ def analyse(c,job,cfg,provider):
             # A missing scenario is reported to the administrator instead of discarding the draft.
             if str(e)!='MODEL_SCENARIO_REQUIRED':raise
             temp=dict(result,decision='knowledge_gap');checked=core.validate(temp,reg,refs,human);checked['decision']=result['decision']
-        draft,style=core.polish(checked['draft']);notes=notes+style
+        draft,style=core.polish(checked['draft'],current['text']);notes=notes+style
         summary=checked['summary']
         if notes:summary+='\nПроверка: '+'; '.join(notes)+'.'
         if human:summary+='\nДиалог передан человеку; управление остаётся у сотрудника.'
