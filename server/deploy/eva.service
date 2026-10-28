@@ -1,0 +1,24 @@
+[Unit]
+Description=Eva draft sales assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eva
+Group=eva
+WorkingDirectory=/opt/eva
+EnvironmentFile=/etc/eva/eva.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/eva/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/eva
+
+[Install]
+WantedBy=multi-user.target
