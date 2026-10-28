@@ -123,7 +123,7 @@ def analyse(c,job,cfg,provider):
         if cp.exists():cap=connect(cp,True)
         data,current,history,human=context(src,cap,job)
         reg=core.read_regulation(PRIVATE/'regulation.json');engine=core.Engine(reg,provider)
-        names={};payload=engine.payload(current,history,human,names)
+        payload=engine.payload(current,history,human)
         if len(core.canonical(payload))>180000:raise core.AgentError('CONTEXT_TOO_LARGE')
         with c:c.execute("UPDATE reports SET status='model_started' WHERE event_key=?",(job['event_key'],))
         messages=[{'role':'system','content':core.SYSTEM},{'role':'user','content':core.canonical(payload)}]
@@ -141,8 +141,8 @@ def analyse(c,job,cfg,provider):
             # A missing scenario is reported to the administrator instead of discarding the draft.
             if str(e)!='MODEL_SCENARIO_REQUIRED':raise
             temp=dict(result,decision='knowledge_gap');checked=core.validate(temp,reg,refs,human);checked['decision']=result['decision']
-        draft,style=core.polish(checked['draft']);draft,unnamed=core.restore(draft,names);notes=notes+style+unnamed
-        summary=core.restore(checked['summary'],names)[0]
+        draft,style=core.polish(checked['draft']);notes=notes+style
+        summary=checked['summary']
         if notes:summary+='\nПроверка: '+'; '.join(notes)+'.'
         if human:summary+='\nДиалог передан человеку; управление остаётся у сотрудника.'
         if not history:summary+='\nПредыдущая история в доступном источнике отсутствует.'
