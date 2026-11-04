@@ -1,5 +1,5 @@
 """Read-only incoming observer and draft report builder. No CRM/customer sender."""
-import os,sys,json,time,sqlite3,hashlib,uuid,urllib.parse,logging
+import os,sys,json,time,sqlite3,hashlib,uuid,urllib.parse,logging,re
 from pathlib import Path
 from datetime import datetime,timezone
 import semantic_core as core
@@ -20,7 +20,6 @@ def message_id(value):
     return value[7:] if value.startswith('wazzup:') else value
 def identity(channel,kind,chat,message):return core.digest([str(channel or ''),str(kind or '').lower(),str(chat or ''),message_id(message)])
 def privacy(text):
-    import re
     text=str(text or '')
     text=re.sub(r'-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----','[закрытый ключ скрыт]',text,flags=re.S)
     return re.sub(r'(?i)(?:sk-[\w-]{16,}|Bearer\s+[\w.-]{16,}|(?:token|api_key|secret)\s*[:=]\s*[\w.-]{12,})','[секрет скрыт]',text)
@@ -116,6 +115,56 @@ def refresh_regulation():
     if len(values.get('valueRanges',[]))!=len(titles):raise core.AgentError('BOOK_PARTIAL_READ')
     reg=core.compile_regulation({t:v.get('values',[]) for t,v in zip(titles,values['valueRanges'])})
     core.atomic(PRIVATE/'regulation.json',reg);return reg
+# Match only complete, unambiguous replies; do not replace a multi-topic draft.
+PAID_VIA_LINK=re.compile(r'(?:да[, ]+)?(?:я |мы )?(?:уже )?оплатил(?:а|и)? по ссылке(?:[.!…]+)?')
+PAYMENT_METHOD_QUESTION=re.compile(
+    r'(?:(?:скажите|подскажите)(?:,? пожалуйста)?[, :]+)?'
+    r'(?:как (?:вы )?опла(?:чивали|тили)(?:[:, ]+(?:по ссылке или по реквизитам|по реквизитам или по ссылке))?'
+    r'|вы опла(?:чивали|тили) (?:по ссылке или по реквизитам|по реквизитам или по ссылке)'
+    r'(?:, которую мы (?:выше )?(?:направляли|отправляли))?)\?')
+INVOICE_DISPUTE=re.compile(
+    r'(?:(?:почему )?в сч[её]те(?: за [а-яё]+)? (?:указано |включено )?'
+    r'(?:(?:больше|меньше) занятий(?:,? чем (?:мы )?(?:планировали|договаривались))?|лишние занятия)'
+    r'|сумма в сч[её]те не сходится)[.!?…]*')
+PAYMENT_REPORT_TEXT={
+    'payment':('Спасибо, сверим оплату.','Проверить поступление платежа.'),
+    'invoice':('Сверим, какие занятия вошли в счёт, и напишем.','Сверить занятия в счёте с планом занятий.'),
+}
+
+def normalized_reply(text):
+    return ' '.join(str(text or '').casefold().split())
+
+def payment_review_kind(current,history,verified_facts):
+    if verified_facts or current.get('attachment_unknown'):return None
+    text=normalized_reply(current['text'])
+    if PAID_VIA_LINK.fullmatch(text):return 'payment'
+    if INVOICE_DISPUTE.fullmatch(text):return 'invoice'
+    if not re.fullmatch(r'по ссылке[.!…]*',text):return None
+    for message in reversed(history):
+        previous=normalized_reply(message.get('text'))
+        if not previous and not message.get('attachment_unknown'):continue
+        if (message.get('role')=='outbound_author_unverified'
+            and not message.get('attachment_unknown') and PAYMENT_METHOD_QUESTION.fullmatch(previous)):
+            return 'payment'
+        return None
+    return None
+
+def report_text(checked,current,history,notes,human,verified_facts):
+    # Only called for validated results. Keep the checks and the handoff unchanged.
+    summary=checked['summary']
+    raw_draft=checked['draft']
+    review=None if checked['decision']=='technical_incident' else payment_review_kind(current,history,verified_facts)
+    if review:
+        raw_draft,instruction=PAYMENT_REPORT_TEXT[review]
+        summary+='\nЧто проверить: '+instruction
+    draft,style=core.polish(raw_draft,current['text'])
+    notes=notes+style
+    if notes:summary+='\nПроверка: '+'; '.join(notes)+'.'
+    if human:summary+='\nДиалог передан человеку; управление остаётся у сотрудника.'
+    if not history:summary+='\nПредыдущая история в доступном источнике отсутствует.'
+    if current.get('attachment_unknown'):summary+='\nСодержимое вложения не распознано.'
+    return summary,draft
+
 def analyse(c,job,cfg,provider):
     src=connect('/var/lib/eva/bot.db',True);cap=None;data=json.loads(job['input_json'])
     try:
@@ -141,12 +190,7 @@ def analyse(c,job,cfg,provider):
             # A missing scenario is reported to the administrator instead of discarding the draft.
             if str(e)!='MODEL_SCENARIO_REQUIRED':raise
             temp=dict(result,decision='knowledge_gap');checked=core.validate(temp,reg,refs,human);checked['decision']=result['decision']
-        draft,style=core.polish(checked['draft'],current['text']);notes=notes+style
-        summary=checked['summary']
-        if notes:summary+='\nПроверка: '+'; '.join(notes)+'.'
-        if human:summary+='\nДиалог передан человеку; управление остаётся у сотрудника.'
-        if not history:summary+='\nПредыдущая история в доступном источнике отсутствует.'
-        if current.get('attachment_unknown'):summary+='\nСодержимое вложения не распознано.'
+        summary,draft=report_text(checked,current,history,notes,human,payload.get('verified_facts'))
         publish(c,job,data,summary,draft,None,cfg)
     except Exception as e:
         code=str(e) if isinstance(e,core.AgentError) else type(e).__name__
