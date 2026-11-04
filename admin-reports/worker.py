@@ -1,7 +1,8 @@
 """Read-only incoming observer and draft report builder. No CRM/customer sender."""
 import os,sys,json,time,sqlite3,hashlib,uuid,urllib.parse,logging,re
 from pathlib import Path
-from datetime import datetime,timezone
+from datetime import date,datetime,timedelta,timezone
+from zoneinfo import ZoneInfo
 import semantic_core as core
 core.COMMON.update("Онлайн Офлайн Очно Заочно Сочувствую Если Напишите Уточните Подскажите История Физика Химия Алгебра Геометрия Биология География Литература Договор Оплата Занятия Занятие Выздоравливайте Рада Желаем Давайте Сможете Вижу Извините Чтобы Отлично Подойдёт Подтвердите Расскажите Принято Жаль Сожалею Платёж Пробное Можете Оплату Обращайтесь Обычно После Свяжитесь Квитанция Ссылка Клиент Клиентка Ученик Ученица Родитель Просит Попросил Попросила Сообщает Согласен Согласна Хочет Запросил Запрашивает Подтверждает Отказывается Интересуется Благодарит Сообщение Вопрос Ответ".split())
 CONFIG=Path('/etc/eva-admin-reports.json')
@@ -149,6 +150,77 @@ def payment_review_kind(current,history,verified_facts):
         return None
     return None
 
+CRM_AVAILABILITY_PATH=Path('/var/lib/eva/crm-readonly/current.json')
+CRM_AVAILABILITY_MAX_AGE=300
+CRM_MOSCOW=ZoneInfo('Europe/Moscow')
+CRM_WEEKDAYS=('понедельник','вторник','среду','четверг','пятницу','субботу','воскресенье')
+CRM_BRANCHES={'интернациональной':'интернациональн','покровском':'покровск'}
+CRM_SUBJECTS={'математике':'математика','русскому языку':'русский язык',
+              'информатике':'информатика','физике':'физика','английскому языку':'английский язык'}
+AVAILABILITY_QUESTION=re.compile(
+    r'(?:есть ли (?:свободное )?место|есть ли (?:свободные )?места)'
+    r' в группе по (?P<subject>математике|русскому языку|информатике|физике|английскому языку)'
+    r'(?: (?:(?P<exam>огэ|егэ)|для (?P<grade>1[01]|[1-9]) класса))?'
+    r' на (?P<branch>интернациональной|покровском)'
+    r' (?:в|во) (?P<day>понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)'
+    r' в (?P<hour>[01]?[0-9]|2[0-3]):(?P<minute>[0-5][0-9])\?'
+)
+
+def crm_group_availability(text,now=None,path=None):
+    """One explicit slot; never infer a group from a ranked guess."""
+    match=AVAILABILITY_QUESTION.fullmatch(normalized_reply(text))
+    if not match:return None
+    now=datetime.now(CRM_MOSCOW) if now is None else now.astimezone(CRM_MOSCOW)
+    try:
+        snapshot=json.loads((CRM_AVAILABILITY_PATH if path is None else path).read_text(encoding='utf-8'))
+        stamp=snapshot.get('fetched_epoch')
+        if (snapshot.get('status')!='ok' or type(stamp) not in (int,float)
+            or not 0<=now.timestamp()-stamp<=CRM_AVAILABILITY_MAX_AGE):
+            return None
+        branches=[b for b in snapshot['branches'] if CRM_BRANCHES[match['branch']] in normalized_reply(b['branch'])]
+        if len(branches)!=1:return None
+        subject=CRM_SUBJECTS[match['subject']]
+        day=CRM_WEEKDAYS.index(match['day'])
+        day_label=('среда' if day==2 else 'пятница' if day==4 else 'суббота' if day==5 else CRM_WEEKDAYS[day])
+        slot=f"{int(match['hour']):02}:{match['minute']}"
+        grade=int(match['grade']) if match['grade'] else None
+        exam=match['exam'].upper() if match['exam'] else None
+        matches=[]
+        for group in branches[0]['groups']:
+            if subject not in {normalized_reply(x) for x in group['subjects']}:continue
+            if grade is not None and group.get('class') not in (None,grade):continue
+            if exam is not None and group.get('exam') not in (None,exam):continue
+            schedule=group['schedule']
+            if not schedule or any(not isinstance(x.get('day'),str) or not isinstance(x.get('time'),str) for x in schedule):
+                # A group with unknown schedule cannot safely be ruled out.
+                return None
+            if any(normalized_reply(x.get('day'))==day_label and x.get('time')==slot for x in schedule):
+                matches.append(group)
+        if len(matches)!=1:return None
+        group=matches[0]
+        if grade is not None and group.get('class')!=grade:return None
+        if exam is not None and group.get('exam')!=exam:return None
+        next_lesson=group['next_lesson']
+        if not next_lesson or group.get('availability_status')!='known':return None
+        if next_lesson['time']!=slot or normalized_reply(next_lesson['subject'])!=subject:return None
+        day_date=date.fromisoformat(next_lesson['date'])
+        when=datetime.combine(day_date,datetime.strptime(slot,'%H:%M').time(),CRM_MOSCOW)
+        if day_date.weekday()!=day or not now<when<=now+timedelta(days=7):return None
+        free,cap,occupied=(next_lesson.get(k) for k in ('free_places','capacity','occupied'))
+        if (any(type(x) is not int for x in (free,cap,occupied)) or cap<=0 or occupied<0
+            or free!=max(0,cap-occupied)):
+            return None
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,OverflowError):
+        return None
+    return when,free
+
+def crm_availability_text(when,free):
+    slot=when.strftime('%d.%m в %H:%M')
+    summary=f'По свежей сводке AlfaCRM: ближайшее занятие {slot}, свободных мест: {free}.'
+    if free==0:return summary,f'На занятие {slot} сейчас нет свободных мест.'
+    tail='место' if free%10==1 and free%100!=11 else 'места' if free%10 in (2,3,4) and free%100 not in (12,13,14) else 'мест'
+    return summary,f'На занятие {slot} сейчас свободно {free} {tail}.'
+
 def report_text(checked,current,history,notes,human,verified_facts):
     # Only called for validated results. Keep the checks and the handoff unchanged.
     summary=checked['summary']
@@ -157,6 +229,12 @@ def report_text(checked,current,history,notes,human,verified_facts):
     if review:
         raw_draft,instruction=PAYMENT_REPORT_TEXT[review]
         summary+='\nЧто проверить: '+instruction
+    elif (not human and not current.get('attachment_unknown') and not verified_facts
+          and checked['decision'] in ('draft_answer','clarify','knowledge_gap')):
+        availability=crm_group_availability(current['text'])
+        if availability is not None:
+            fact,raw_draft=crm_availability_text(*availability)
+            summary+='\n'+fact
     draft,style=core.polish(raw_draft,current['text'])
     notes=notes+style
     if notes:summary+='\nПроверка: '+'; '.join(notes)+'.'
